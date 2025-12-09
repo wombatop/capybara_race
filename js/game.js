@@ -17,9 +17,13 @@ let mandarins = [];
 let trees = []; // лес
 
 // настройки "кольца" леса
-const FOREST_LENGTH = 240;      // длина по Z
-const FOREST_ROWS = 24;         // сколько "рядов" леса
-const FOREST_SPACING_Z = 8;     // расстояние между рядами
+// настройки "кольца" леса
+const FOREST_ROWS = 32;          // больше рядов
+const FOREST_SPACING_Z = 6;      // ряды ближе друг к другу
+const FOREST_LENGTH = FOREST_ROWS * FOREST_SPACING_Z;
+// 32 * 6 = 192 — длина кольца = длине леса
+
+
 
 let speed = 12;         // юнитов в секунду
 let distance = 0;
@@ -190,6 +194,33 @@ function createScene() {
     treeMat.backFaceCulling = false;
     treeMat.specularColor = new BABYLON.Color3(0, 0, 0);
 
+    // ───── Мандарин (спрайт) ─────
+    const mandarinTex = new BABYLON.Texture("assets/orange.png", scene);
+    const mandarinMat = new BABYLON.StandardMaterial("mandarinMat", scene);
+    mandarinMat.diffuseTexture = mandarinTex;
+    mandarinMat.diffuseTexture.hasAlpha = true;
+    mandarinMat.backFaceCulling = false;
+    mandarinMat.specularColor = new BABYLON.Color3(0, 0, 0);
+    mandarinMat.emissiveColor = new BABYLON.Color3(1, 1, 1);
+
+    // Сохраним материал в сцене, чтобы переиспользовать
+    scene.mandarinMaterial = mandarinMat;
+
+    // ───── Препятствия (спрайты) ─────
+    const obsNames = ["cone", "log", "rock", "stump"];
+    scene.obstacleMaterials = [];
+
+    obsNames.forEach(name => {
+        const tex = new BABYLON.Texture("assets/" + name + ".png", scene);
+        const mat = new BABYLON.StandardMaterial("obsMat_" + name, scene);
+        mat.diffuseTexture = tex;
+        mat.diffuseTexture.hasAlpha = true;
+        mat.backFaceCulling = false;
+        mat.specularColor = new BABYLON.Color3(0, 0, 0);
+        mat.emissiveColor = new BABYLON.Color3(1, 1, 1);
+        scene.obstacleMaterials.push(mat);
+    });
+
     createForest(scene, treeMat);
 
     // ───── Капибара (уменьшенная) ─────
@@ -234,7 +265,8 @@ function createForest(scene, treeMat) {
 
     for (let side of [-1, 1]) {
         for (let row = 0; row < FOREST_ROWS; row++) {
-            const zBase = row * FOREST_SPACING_Z + 12;
+            const zBase = row * FOREST_SPACING_Z - 20;
+
 
             const pattern = patterns[Math.floor(Math.random() * patterns.length)];
 
@@ -433,26 +465,53 @@ function moveAndCleanupObjects(arr, dz) {
 
 function spawnObstacle(scene, z) {
     const lane = laneX[Math.floor(Math.random() * laneX.length)];
-    const box = BABYLON.MeshBuilder.CreateBox("obstacle", {
-        width: 1,
-        height: 1.2,
-        depth: 1
-    }, scene);
-    box.position.set(lane, 0.6, z);
-    const mat = new BABYLON.StandardMaterial("obstacleMat", scene);
-    mat.diffuseColor = new BABYLON.Color3(0.8, 0.2, 0.2);
-    box.material = mat;
-    obstacles.push(box);
+
+    // Выбираем случайный материал
+    if (!scene.obstacleMaterials || scene.obstacleMaterials.length === 0) return;
+    const mat = scene.obstacleMaterials[Math.floor(Math.random() * scene.obstacleMaterials.length)];
+
+    // Создаем спрайт (plane)
+    // Размер 2.4 (было 3.0, уменьшили на 20%)
+    const obs = BABYLON.MeshBuilder.CreatePlane("obstacle", { width: 2.4, height: 2.4 }, scene);
+    obs.position.set(lane, 1.2, z); // поднимаем центр (2.4 / 2 = 1.2)
+
+    obs.material = mat;
+
+    // Если это бревно, отключаем поворот (billboard), чтобы оно ехало прямо
+    if (mat.name === "obsMat_log") {
+        obs.billboardMode = BABYLON.Mesh.BILLBOARDMODE_NONE;
+        // Поворачиваем на 180 (PI), чтобы лицевая сторона смотрела на камеру (если текстура перевернута, то 0)
+        // Обычно Plane смотрит в -Z локально? Проверим.
+        // Если текстура нормальная, то rotation.y = 0 или Math.PI.
+        // Оставим rotation.y = 0, так как камера смотрит в +Z (на самом деле нет, камера в -Z смотрит в +Z).
+        // Plane создается в плоскости XY. Normal смотрит в -Z.
+        // Значит, он смотрит на камеру (так как камера сзади).
+        // Но чтобы бревно лежало или не крутилось, просто фиксируем.
+        // Если нужно, чтобы оно лежало поперек дороги как на картинке, то ничего не трогаем, просто биллборд офф.
+        obs.rotation.y = 0;
+    } else {
+        obs.billboardMode = BABYLON.Mesh.BILLBOARDMODE_Y;
+    }
+
+    // Чуть рандомизируем размер
+    const scale = 0.9 + Math.random() * 0.4;
+    obs.scaling.setAll(scale);
+
+    obstacles.push(obs);
 }
 
 function spawnMandarin(scene, z) {
     const lane = laneX[Math.floor(Math.random() * laneX.length)];
-    const s = BABYLON.MeshBuilder.CreateSphere("mandarin", { diameter: 0.7 }, scene);
-    s.position.set(lane, 0.5, z);
-    const mat = new BABYLON.StandardMaterial("mandarinMat", scene);
-    mat.diffuseColor = new BABYLON.Color3(1, 0.5, 0);
-    mat.emissiveColor = new BABYLON.Color3(0.8, 0.4, 0);
-    s.material = mat;
+    // Создаем plane вместо сферы
+    const s = BABYLON.MeshBuilder.CreatePlane("mandarin", { width: 1.0, height: 1.0 }, scene);
+    s.position.set(lane, 0.8, z); // чуть выше, так как это спрайт
+
+    // Используем заранее созданный материал
+    if (scene.mandarinMaterial) {
+        s.material = scene.mandarinMaterial;
+    }
+
+    s.billboardMode = BABYLON.Mesh.BILLBOARDMODE_Y;
     mandarins.push(s);
 }
 
@@ -463,7 +522,8 @@ function checkCollisions() {
         const o = obstacles[i];
         const dx = o.position.x - player.position.x;
         const dz = o.position.z - player.position.z;
-        if (Math.abs(dx) < 0.8 && Math.abs(dz) < 1.2) {
+        // Коллизия под новый размер (2.4 width => ~0.96 bound, depth ~1.2)
+        if (Math.abs(dx) < 0.96 && Math.abs(dz) < 1.2) {
             onGameOver();
             return;
         }
