@@ -6,7 +6,7 @@ if (window.Telegram && Telegram.WebApp) {
     Telegram.WebApp.setBackgroundColor("#020715");
 }
 
-// Глобальные переменные (инициализируем позже, после загрузки DOM)
+// ───────── ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ─────────
 let canvas;
 let engine;
 let scene;
@@ -17,13 +17,9 @@ let mandarins = [];
 let trees = []; // лес
 
 // настройки "кольца" леса
-// настройки "кольца" леса
 const FOREST_ROWS = 32;          // больше рядов
 const FOREST_SPACING_Z = 6;      // ряды ближе друг к другу
-const FOREST_LENGTH = FOREST_ROWS * FOREST_SPACING_Z;
-// 32 * 6 = 192 — длина кольца = длине леса
-
-
+const FOREST_LENGTH = FOREST_ROWS * FOREST_SPACING_Z; // 32 * 6 = 192
 
 let speed = 12;         // юнитов в секунду
 let distance = 0;
@@ -38,6 +34,13 @@ let bestLabel;
 let gameOverPanel;
 let finalScore;
 let restartBtn;
+
+// ---- ЗВУКИ (HTML5 Audio) ----
+let sfxEngine = null;
+let sfxForest = null;
+let sfxPickup = null;
+let sfxCrash = null;
+let audioUnlocked = false; // для мобильных браузеров
 
 // ---- ЛОКАЛЬНЫЕ РЕКОРДЫ ----
 const BEST_RUN_KEY = "capybara_best_run";
@@ -97,6 +100,46 @@ function saveBestRun(score, distance) {
     return isNewRecord;
 }
 
+// ---- ИНИЦИАЛИЗАЦИЯ ЗВУКОВ (HTML5 Audio) ----
+function initSounds() {
+    const base = "assets/sounds/";
+
+    // Двигатель
+    sfxEngine = new Audio(base + "kart.mp3");
+    sfxEngine.loop = true;
+    sfxEngine.volume = 0.45;
+
+    // Лес
+    sfxForest = new Audio(base + "pixel.mp3");
+    sfxForest.loop = true;
+    sfxForest.volume = 0.2;
+
+    // Сбор мандарина
+    sfxPickup = new Audio(base + "mandarin_pickup.mp3");
+    sfxPickup.loop = false;
+    sfxPickup.volume = 0.9;
+
+    // Удар металла о дерево
+    sfxCrash = new Audio(base + "boom.mp3");
+    sfxCrash.loop = false;
+    sfxCrash.volume = 1.0;
+}
+
+// Разрешить звук после первого взаимодействия пользователя
+function unlockAudioIfNeeded() {
+    if (audioUnlocked) return;
+    console.log("unlockAudioIfNeeded — trying to unlock");
+
+    audioUnlocked = true;
+
+    if (sfxForest) {
+        sfxForest.play().catch(err => console.warn("forest play error:", err));
+    }
+    if (sfxEngine && !gameOver) {
+        sfxEngine.play().catch(err => console.warn("engine play error:", err));
+    }
+}
+
 // ---- СЦЕНА ----
 function createScene() {
     scene = new BABYLON.Scene(engine);
@@ -145,6 +188,9 @@ function createScene() {
     // ───── Свет ─────
     const light = new BABYLON.HemisphericLight("light", new BABYLON.Vector3(0, 1, 0), scene);
     light.intensity = 0.9;
+
+    // --- ЗВУКИ ---
+    initSounds();
 
     // ───── Трава (земля по бокам от дороги) ─────
     const ground = BABYLON.MeshBuilder.CreateGround("ground", {
@@ -203,7 +249,6 @@ function createScene() {
     mandarinMat.specularColor = new BABYLON.Color3(0, 0, 0);
     mandarinMat.emissiveColor = new BABYLON.Color3(1, 1, 1);
 
-    // Сохраним материал в сцене, чтобы переиспользовать
     scene.mandarinMaterial = mandarinMat;
 
     // ───── Препятствия (спрайты) ─────
@@ -221,6 +266,7 @@ function createScene() {
         scene.obstacleMaterials.push(mat);
     });
 
+    // Лес
     createForest(scene, treeMat);
 
     // ───── Капибара (уменьшенная) ─────
@@ -266,7 +312,6 @@ function createForest(scene, treeMat) {
     for (let side of [-1, 1]) {
         for (let row = 0; row < FOREST_ROWS; row++) {
             const zBase = row * FOREST_SPACING_Z - 20;
-
 
             const pattern = patterns[Math.floor(Math.random() * patterns.length)];
 
@@ -338,6 +383,7 @@ function setupInput(scene, camera) {
     function moveToLane(index) {
         index = Math.max(0, Math.min(laneX.length - 1, index));
         targetLaneIndex = index;
+        unlockAudioIfNeeded(); // любое действие разблокирует звук
     }
 
     scene.onKeyboardObservable.add((kbInfo) => {
@@ -360,6 +406,7 @@ function setupInput(scene, camera) {
             case BABYLON.PointerEventTypes.POINTERDOWN:
                 pointerDown = true;
                 pointerX = pointerInfo.event.clientX;
+                unlockAudioIfNeeded();
                 break;
             case BABYLON.PointerEventTypes.POINTERUP:
                 pointerDown = false;
@@ -383,10 +430,14 @@ function setupInput(scene, camera) {
         const targetX = laneX[targetLaneIndex];
         const dx = targetX - player.position.x;
         const laneMoveSpeed = 8;
-        if (Math.abs(dx) < 0.01) {
+
+        // Fix: clamp movement to avoid overshooting and oscillation
+        const moveStep = laneMoveSpeed * dt;
+
+        if (Math.abs(dx) <= moveStep) {
             player.position.x = targetX;
         } else {
-            player.position.x += Math.sign(dx) * laneMoveSpeed * dt;
+            player.position.x += Math.sign(dx) * moveStep;
         }
 
         camera.position.x = BABYLON.Scalar.Lerp(camera.position.x, player.position.x, 0.1);
@@ -414,6 +465,12 @@ function resetGameVariables() {
     const best = loadBestRun();
     if (best) {
         updateBestRunLabel(best);
+    }
+
+    // перезапускаем лупы, если звук уже разблокирован
+    if (audioUnlocked) {
+        if (sfxForest && sfxForest.paused) sfxForest.play().catch(() => { });
+        if (sfxEngine && sfxEngine.paused) sfxEngine.play().catch(() => { });
     }
 }
 
@@ -466,34 +523,21 @@ function moveAndCleanupObjects(arr, dz) {
 function spawnObstacle(scene, z) {
     const lane = laneX[Math.floor(Math.random() * laneX.length)];
 
-    // Выбираем случайный материал
     if (!scene.obstacleMaterials || scene.obstacleMaterials.length === 0) return;
     const mat = scene.obstacleMaterials[Math.floor(Math.random() * scene.obstacleMaterials.length)];
 
-    // Создаем спрайт (plane)
-    // Размер 2.4 (было 3.0, уменьшили на 20%)
     const obs = BABYLON.MeshBuilder.CreatePlane("obstacle", { width: 2.4, height: 2.4 }, scene);
-    obs.position.set(lane, 1.2, z); // поднимаем центр (2.4 / 2 = 1.2)
+    obs.position.set(lane, 1.2, z);
 
     obs.material = mat;
 
-    // Если это бревно, отключаем поворот (billboard), чтобы оно ехало прямо
     if (mat.name === "obsMat_log") {
         obs.billboardMode = BABYLON.Mesh.BILLBOARDMODE_NONE;
-        // Поворачиваем на 180 (PI), чтобы лицевая сторона смотрела на камеру (если текстура перевернута, то 0)
-        // Обычно Plane смотрит в -Z локально? Проверим.
-        // Если текстура нормальная, то rotation.y = 0 или Math.PI.
-        // Оставим rotation.y = 0, так как камера смотрит в +Z (на самом деле нет, камера в -Z смотрит в +Z).
-        // Plane создается в плоскости XY. Normal смотрит в -Z.
-        // Значит, он смотрит на камеру (так как камера сзади).
-        // Но чтобы бревно лежало или не крутилось, просто фиксируем.
-        // Если нужно, чтобы оно лежало поперек дороги как на картинке, то ничего не трогаем, просто биллборд офф.
         obs.rotation.y = 0;
     } else {
         obs.billboardMode = BABYLON.Mesh.BILLBOARDMODE_Y;
     }
 
-    // Чуть рандомизируем размер
     const scale = 0.9 + Math.random() * 0.4;
     obs.scaling.setAll(scale);
 
@@ -502,11 +546,9 @@ function spawnObstacle(scene, z) {
 
 function spawnMandarin(scene, z) {
     const lane = laneX[Math.floor(Math.random() * laneX.length)];
-    // Создаем plane вместо сферы
     const s = BABYLON.MeshBuilder.CreatePlane("mandarin", { width: 1.0, height: 1.0 }, scene);
-    s.position.set(lane, 0.8, z); // чуть выше, так как это спрайт
+    s.position.set(lane, 0.8, z);
 
-    // Используем заранее созданный материал
     if (scene.mandarinMaterial) {
         s.material = scene.mandarinMaterial;
     }
@@ -518,17 +560,18 @@ function spawnMandarin(scene, z) {
 function checkCollisions() {
     if (!player) return;
 
+    // препятствия
     for (let i = 0; i < obstacles.length; i++) {
         const o = obstacles[i];
         const dx = o.position.x - player.position.x;
         const dz = o.position.z - player.position.z;
-        // Коллизия под новый размер (2.4 width => ~0.96 bound, depth ~1.2)
         if (Math.abs(dx) < 0.96 && Math.abs(dz) < 1.2) {
             onGameOver();
             return;
         }
     }
 
+    // мандарины
     for (let i = mandarins.length - 1; i >= 0; i--) {
         const m = mandarins[i];
         const dx = m.position.x - player.position.x;
@@ -536,6 +579,12 @@ function checkCollisions() {
         if (Math.abs(dx) < 0.8 && Math.abs(dz) < 1.2) {
             score++;
             scoreLabel.textContent = "Мандарины: " + score;
+
+            if (sfxPickup) {
+                sfxPickup.currentTime = 0;
+                sfxPickup.play().catch(() => { });
+            }
+
             m.dispose();
             mandarins.splice(i, 1);
         }
@@ -544,6 +593,17 @@ function checkCollisions() {
 
 function onGameOver() {
     gameOver = true;
+
+    // Останавливаем двигатель, но оставляем лес
+    if (sfxEngine && !sfxEngine.paused) {
+        sfxEngine.pause();
+        sfxEngine.currentTime = 0;
+    }
+
+    if (sfxCrash) {
+        sfxCrash.currentTime = 0;
+        sfxCrash.play().catch(() => { });
+    }
 
     const isRecord = saveBestRun(score, distance);
 
@@ -559,12 +619,88 @@ function onGameOver() {
     gameOverPanel.style.display = "flex";
 }
 
+// ---- PRELOADING ASSETS ----
+async function preloadAssets(scene) {
+    const assets = [
+        "assets/capybara.png",
+        "assets/cone.png",
+        "assets/log.png",
+        "assets/orange.png",
+        "assets/rock.png",
+        "assets/stump.png",
+        "assets/tree.png"
+    ];
+
+    const soundAssets = [
+        { type: 'engine', file: 'assets/sounds/kart.mp3' },
+        { type: 'forest', file: 'assets/sounds/pixel.mp3' },
+        { type: 'pickup', file: 'assets/sounds/mandarin_pickup.mp3' },
+        { type: 'crash', file: 'assets/sounds/boom.mp3' }
+    ];
+
+    const promises = [];
+
+    // Preload textures
+    assets.forEach(url => {
+        promises.push(new Promise((resolve, reject) => {
+            const img = new Image();
+            img.src = url;
+            img.onload = resolve;
+            img.onerror = () => {
+                console.warn("Failed to load texture:", url);
+                resolve(); // Continue anyway to avoid blocking
+            };
+        }));
+    });
+
+    // Initialize sounds earlier but wait for canplaythrough
+    // Note: Audio API doesn't always fire canplaythrough on mobile without interaction,
+    // so we'll just init them and use a short timeout/promise wrapper for "enough" loading.
+
+    // Переносим инициализацию звуков сюда, чтобы загрузить их
+    const base = "assets/sounds/";
+
+    // Helpers
+    const loadAudio = (url, loop, vol) => {
+        return new Promise((resolve) => {
+            const audio = new Audio(url);
+            audio.loop = loop;
+            audio.volume = vol;
+            // Просто ждем, когда браузер скажет что метаданные есть или можно играть
+            // Если слишком долго — таймаут
+            const onLoaded = () => {
+                resolve(audio);
+                audio.removeEventListener('canplaythrough', onLoaded);
+            };
+            audio.addEventListener('canplaythrough', onLoaded);
+            audio.load(); // Force load
+
+            // Fallback timeout 2s
+            setTimeout(() => resolve(audio), 2000);
+        });
+    };
+
+    // Загружаем звуки параллельно
+    const pEngine = loadAudio(base + "kart.mp3", true, 0.45).then(a => sfxEngine = a);
+    const pForest = loadAudio(base + "pixel.mp3", true, 0.2).then(a => sfxForest = a);
+    const pPickup = loadAudio(base + "mandarin_pickup.mp3", false, 0.9).then(a => sfxPickup = a);
+    const pCrash = loadAudio(base + "boom.mp3", false, 1.0).then(a => sfxCrash = a);
+
+    promises.push(pEngine, pForest, pPickup, pCrash);
+
+    // Wait all
+    await Promise.all(promises);
+}
+
 // ---- ИНИЦИАЛИЗАЦИЯ ПОСЛЕ ЗАГРУЗКИ DOM ----
-window.addEventListener("DOMContentLoaded", () => {
+window.addEventListener("DOMContentLoaded", async () => {
     if (!window.BABYLON) {
         console.error("BABYLON не найден. Проверь подключение babylon.js до game.js");
         return;
     }
+
+    const loadingScreen = document.getElementById("loadingScreen");
+    const loadingText = document.getElementById("loadingText");
 
     canvas = document.getElementById("renderCanvas");
     if (!canvas) {
@@ -581,7 +717,28 @@ window.addEventListener("DOMContentLoaded", () => {
 
     engine = new BABYLON.Engine(canvas, true);
 
+    // Загружаем ресурсы
+    if (loadingText) loadingText.textContent = "Загрузка ресурсов...";
+
+    // Создаем пустую сцену временно или пока не нужно
+    // Но нам нужен scene для текстур? Нет, Image() мы грузим отдельно.
+    // А вот BABYLON.Texture требует сцену.
+    // Но мы пока просто предзагрузили Image в кэш браузера.
+
+    await preloadAssets();
+
+    // Скрываем лоадер
+    if (loadingScreen) {
+        loadingScreen.style.opacity = "0";
+        setTimeout(() => {
+            loadingScreen.style.display = "none";
+        }, 500);
+    }
+
     const sceneInstance = createScene();
+
+    // Инициализируем звуки (глобальные переменные уже заполнены в preloadAssets)
+    // initSounds(); -> больше не нужна, так как мы создали объекты аудио в preloadAssets
 
     const initialBest = loadBestRun();
     if (initialBest) {
